@@ -10,6 +10,8 @@ __all__ = ('sm_section', 'sm_name', 'mkhead', 'find_first_remote_branch',
 #{ Utilities
 
 
+SM_SECTION_NAME_REGEX = '^submodule "(?P<name>.*)"$'
+
 def sm_section(name):
     """:return: section title used in .gitmodules configuration file"""
     return 'submodule "%s"' % name

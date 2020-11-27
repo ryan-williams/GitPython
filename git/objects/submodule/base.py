@@ -2,6 +2,7 @@
 from io import BytesIO
 import logging
 import os
+import re
 import stat
 from unittest import SkipTest
 import uuid
@@ -24,6 +25,7 @@ from git.exc import (
     BadName
 )
 from git.objects.base import IndexObject, Object
+from git.objects.submodule.util import SM_SECTION_NAME_REGEX
 from git.objects.util import Traversable
 from git.util import (
     Iterable,
@@ -116,20 +118,28 @@ class Submodule(IndexObject, Iterable, Traversable):
             self._name = name
 
     def _set_cache_(self, attr):
-        if attr in ('path', '_url', '_branch_path'):
+        if attr in ('path', '_url', '_branch_path', '_name'):
             reader = self.config_reader()
             # default submodule values
             try:
                 self.path = reader.get('path')
             except cp.NoSectionError as e:
-                raise ValueError("This submodule instance does not exist anymore in '%s' file"
-                                 % osp.join(self.repo.working_tree_dir, '.gitmodules')) from e
+                if self.repo.working_tree_dir:
+                    raise ValueError("This submodule instance does not exist anymore in '%s' file"
+                                     % osp.join(self.repo.working_tree_dir, '.gitmodules')) from e
+                else:
+                    raise ValueError("This submodule instance does not exist anymore in bare repo at '%s'"
+                                     % self.repo.git_dir) from e
             # end
             self._url = reader.get('url')
             # git-python extension values - optional
             self._branch_path = reader.get_value(self.k_head_option, git.Head.to_full_path(self.k_head_default))
-        elif attr == '_name':
-            raise AttributeError("Cannot retrieve the name of a submodule if it was not set initially")
+            section_name = reader._section_name
+            m = re.match(SM_SECTION_NAME_REGEX, section_name)
+            if not m:
+                raise RuntimeError('Unexpected submodule section name in %s: %s' % (reader.file_or_files, section_name))
+            name = m['name']
+            self._name = name
         else:
             super(Submodule, self)._set_cache_(attr)
         # END handle attribute name
@@ -362,9 +372,7 @@ class Submodule(IndexObject, Iterable, Traversable):
         if sm.exists():
             # reretrieve submodule from tree
             try:
-                sm = repo.head.commit.tree[path]
-                sm._name = name
-                return sm
+                return repo.head.commit[path]
             except KeyError:
                 # could only be in index
                 index = repo.index
@@ -927,7 +935,7 @@ class Submodule(IndexObject, Iterable, Traversable):
 
         return self
 
-    def set_parent_commit(self, commit, check=True):
+    def set_parent_commit(self, commit, check=True, pcommit_name=None):
         """Set this instance to use the given commit whose tree is supposed to
         contain the .gitmodules blob.
 
@@ -953,20 +961,17 @@ class Submodule(IndexObject, Iterable, Traversable):
 
         prev_pc = self._parent_commit
         self._parent_commit = pcommit
+        if pcommit_name:
+            self._name = pcommit_name
 
         if check:
-            parser = self._config_parser(self.repo, self._parent_commit, read_only=True)
-            if not parser.has_section(sm_section(self.name)):
-                self._parent_commit = prev_pc
-                raise ValueError("Submodule at path %r did not exist in parent commit %s" % (self.path, commit))
-            # END handle submodule did not exist
-        # END handle checking mode
+            self._set_cache_('path')
 
         # update our sha, it could have changed
         # If check is False, we might see a parent-commit that doesn't even contain the submodule anymore.
         # in that case, mark our sha as being NULL
         try:
-            self.binsha = pctree[self.path].binsha
+            self.binsha = pctree.join(self.path, parent_commit=pcommit).binsha
         except KeyError:
             self.binsha = self.NULL_BIN_SHA
         # end
@@ -1140,6 +1145,14 @@ class Submodule(IndexObject, Iterable, Traversable):
             return self.repo.commit()
         return self._parent_commit
 
+    @parent_commit.setter
+    def parent_commit(self, parent_commit):
+        assert parent_commit
+        if self._parent_commit != parent_commit:
+            self._clear_cache()
+        self._parent_commit = parent_commit
+
+
     @property
     def name(self):
         """:return: The name of this submodule. It is used to identify it within the
@@ -1195,7 +1208,7 @@ class Submodule(IndexObject, Iterable, Traversable):
             # get the binsha
             index = repo.index
             try:
-                sm = rt[p]
+                sm = pc[p]
             except KeyError:
                 # try the index, maybe it was just added
                 try:
