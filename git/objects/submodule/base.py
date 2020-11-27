@@ -114,11 +114,10 @@ class Submodule(IndexObject, Iterable, Traversable):
         if branch_path is not None:
             assert isinstance(branch_path, str)
             self._branch_path = branch_path
-        if name is not None:
-            self._name = name
+        self._name = name
 
     def _set_cache_(self, attr):
-        if attr in ('path', '_url', '_branch_path', '_name'):
+        if attr in ('path', '_url', '_branch_path'):
             reader = self.config_reader()
             # default submodule values
             try:
@@ -134,12 +133,6 @@ class Submodule(IndexObject, Iterable, Traversable):
             self._url = reader.get('url')
             # git-python extension values - optional
             self._branch_path = reader.get_value(self.k_head_option, git.Head.to_full_path(self.k_head_default))
-            section_name = reader._section_name
-            m = re.match(SM_SECTION_NAME_REGEX, section_name)
-            if not m:
-                raise RuntimeError('Unexpected submodule section name in %s: %s' % (reader.file_or_files, section_name))
-            name = m['name']
-            self._name = name
         else:
             super(Submodule, self)._set_cache_(attr)
         # END handle attribute name
@@ -172,11 +165,11 @@ class Submodule(IndexObject, Iterable, Traversable):
         return hash(self._name)
 
     def __str__(self):
-        return self._name
+        return self.name
 
     def __repr__(self):
-        return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)"\
-               % (type(self).__name__, self._name, self.path, self.url, self.branch_path)
+        return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)" \
+               % (type(self).__name__, self.name, self.path, self.url, self.branch_path)
 
     @classmethod
     def _config_parser(cls, repo, parent_commit, read_only):
@@ -227,6 +220,51 @@ class Submodule(IndexObject, Iterable, Traversable):
         sio = BytesIO(parent_commit.tree[cls.k_modules_file].data_stream.read())
         sio.name = cls.k_modules_file
         return sio
+
+    def _lookup_name_by_config_section_path(self):
+        try:
+            pc = self.parent_commit
+        except ValueError:
+            pc = None
+
+        parser = self._config_parser(self.repo, pc, read_only=True)
+
+        name = None
+        config_file = parser._file_or_files
+        parser.read()
+        parser_sections = parser._sections
+        section_items = list(parser_sections.items())
+        for section_name, sections in section_items:
+            m = re.match(SM_SECTION_NAME_REGEX, section_name)
+            if not m:
+                raise RuntimeError('Unrecognized submodule section line: %s' % section_name)
+            cur_name = m['name']
+            if self.path == sections['path']:
+                # if [section['path'] == self.path for section in sections]:
+                if name is None:
+                    name = cur_name
+                else:
+                    raise AttributeError(
+                        'Submodule name not set, and multiple sections matching path (%s) found in config file %s (commit: %s): %s' % (
+                            self.path,
+                            config_file,
+                            pc or '???',
+                            ','.join([name, cur_name]),
+                        )
+                    )
+            else:
+                print('path %s not found in %d sections named %s' % (self.path, len(sections), section_name))
+        if name is None:
+            raise AttributeError(
+                'Submodule name not set, and no section matching path (%s) found in config file %s (commit: %s) with sections %s' % (
+                    self.path,
+                    config_file,
+                    pc.hexsha or '???',
+                    ','.join([k for k, _ in section_items])
+                )
+            )
+
+        self._name = name
 
     def _config_parser_constrained(self, read_only):
         """:return: Config Parser constrained to our submodule in read or write mode"""
@@ -1162,6 +1200,8 @@ class Submodule(IndexObject, Iterable, Traversable):
             used for remotes, which allows to change the path of the submodule
             easily
         """
+        if self._name is None:
+            self._lookup_name_by_config_section_path()
         return self._name
 
     def config_reader(self):

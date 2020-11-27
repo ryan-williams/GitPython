@@ -2,6 +2,7 @@
 # This module is part of GitPython and is released under
 # the BSD License: http://www.opensource.org/licenses/bsd-license.php
 import os
+import re
 import shutil
 import sys
 from unittest import skipIf
@@ -967,6 +968,9 @@ class TestSubmodule(TestBase):
         tree = parent.tree()
         sm_tree = tree['mymodules/myname']
         assert sm_tree.hexsha == 'f4d7a58b4d96200cd057a38a0758d3c84901f57e'
+        assert str(sm_tree) == 'test_module'
+        rpr = repr(sm_tree)
+        assert re.match('git.Submodule\(name=test_module, path=mymodules/myname, url=.*/git/ext/gitdb/gitdb/ext/smmap, branch_path=refs/heads/master\)', rpr)
 
         sm_repo.git.checkout('v3.0.4')
         parent.git.commit('-a','-m','update test submodule to v3.0.4')
