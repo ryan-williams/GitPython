@@ -161,12 +161,23 @@ class Submodule(IndexObject, Iterable, Traversable):
         """Hash this instance using its logical id, not the sha"""
         return hash(self._name)
 
+    def _get_name(self):
+        try:
+            return self._name
+        except AttributeError:
+            return None
+
     def __str__(self):
-        return self._name
+        return self._get_name() or '<unknown submodule name>'
 
     def __repr__(self):
-        return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)"\
+        name = self._get_name()
+        if name:
+            return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)"\
                % (type(self).__name__, self._name, self.path, self.url, self.branch_path)
+        else:
+            return "git.%s(path=%s, url=%s, branch_path=%s)" \
+                   % (type(self).__name__, self.path, self.url, self.branch_path)
 
     @classmethod
     def _config_parser(cls, repo, parent_commit, read_only):

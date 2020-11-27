@@ -945,3 +945,27 @@ class TestSubmodule(TestBase):
         sm_depth = 1
         sm = parent.create_submodule(sm_name, sm_name, url=self._small_repo_url(), depth=sm_depth)
         self.assertEqual(len(list(sm.module().iter_commits())), sm_depth)
+
+    @with_rw_directory
+    def test_submodule_name(self, rwdir):
+        parent_dir = osp.join(rwdir, 'test_tree')
+        parent = git.Repo.init(parent_dir)
+        sm_name = 'test_module'
+        sm_path = 'mymodules/myname'
+        sm_dir = osp.join(parent_dir, sm_path)
+        parent.create_submodule(sm_name, sm_path, url=self._small_repo_url())
+        sm_repo = git.Repo(sm_dir)
+
+        sm_repo.git.checkout('v3.0.2')
+        parent.git.commit('-a','-m','add test submodule: smmap v3.0.2')
+        tree = parent.tree()
+        sm_tree = tree['mymodules/myname']
+        assert sm_tree.hexsha == 'f4d7a58b4d96200cd057a38a0758d3c84901f57e'
+        assert str(sm_tree) == '<unknown submodule name>'
+        self.assertRaises(AttributeError, repr, sm_tree)
+
+        sm_repo.git.checkout('v3.0.4')
+        parent.git.commit('-a','-m','update test submodule to v3.0.4')
+        tree = parent.tree()
+        sm_tree = tree['mymodules/myname']
+        assert sm_tree.hexsha == '5e5f940dff80beaa3eedf9342ef502f5e630d5ed'
