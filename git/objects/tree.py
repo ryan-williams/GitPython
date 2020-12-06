@@ -207,7 +207,7 @@ class Tree(IndexObject, diff.Diffable, util.Traversable, util.Serializable):
                 raise TypeError("Unknown mode %o found in tree data for path '%s'" % (mode, path)) from e
         # END for each item
 
-    def join(self, file):
+    def join(self, file, parent_commit=None):
         """Find the named object in this tree's contents
         :return: ``git.Blob`` or ``git.Tree`` or ``git.Submodule``
 
@@ -218,7 +218,7 @@ class Tree(IndexObject, diff.Diffable, util.Traversable, util.Serializable):
             item = self
             tokens = file.split('/')
             for i, token in enumerate(tokens):
-                item = tree[token]
+                item = tree.join(token, parent_commit=parent_commit)
                 if item.type == 'tree':
                     tree = item
                 else:
@@ -233,9 +233,15 @@ class Tree(IndexObject, diff.Diffable, util.Traversable, util.Serializable):
             return item
         else:
             for info in self._cache:
-                if info[2] == file:     # [2] == name
-                    return self._map_id_to_type[info[1] >> 12](self.repo, info[0], info[1],
-                                                               join_path(self.path, info[2]))
+                [ binsha, mode, path ] = info
+                if path == file:     # [2] == name
+                    path = join_path(self.path, path)
+                    type_id = mode >> 12
+                    typ = self._map_id_to_type[type_id]
+                    if typ == Submodule:
+                        return typ(self.repo, binsha=binsha, mode=mode, path=path, parent_commit=parent_commit)
+                    else:
+                        return typ(self.repo, binsha=binsha, mode=mode, path=path)
             # END for each obj
             raise KeyError(msg % file)
         # END handle long paths

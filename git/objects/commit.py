@@ -132,6 +132,9 @@ class Commit(base.Object, Iterable, Diffable, Traversable, Serializable):
         if gpgsig is not None:
             self.gpgsig = gpgsig
 
+    def __getitem__(self, item):
+        return self.tree.join(item, parent_commit=self)
+
     @classmethod
     def _get_intermediate_items(cls, commit):
         return commit.parents
