@@ -52,9 +52,7 @@ class TestSubmodule(TestBase):
     def _do_base_tests(self, rwrepo):
         """Perform all tests in the given repository, it may be bare or nonbare"""
         # manual instantiation
-        smm = Submodule(rwrepo, "\0" * 20)
-        # name needs to be set in advance
-        self.assertRaises(AttributeError, getattr, smm, 'name')
+        Submodule(rwrepo, b"\0" * 20, name='foo')
 
         # iterate - 1 submodule
         sms = Submodule.list_items(rwrepo, self.k_subm_current)

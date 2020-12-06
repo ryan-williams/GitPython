@@ -214,7 +214,7 @@ class Submodule(IndexObject, Iterable, Traversable):
     @classmethod
     def _sio_modules(cls, parent_commit):
         """:return: Configuration file as BytesIO - we only access it through the respective blob's data"""
-        sio = BytesIO(parent_commit.tree[cls.k_modules_file].data_stream.read())
+        sio = BytesIO(parent_commit[cls.k_modules_file].data_stream.read())
         sio.name = cls.k_modules_file
         return sio
 
@@ -362,7 +362,7 @@ class Submodule(IndexObject, Iterable, Traversable):
         if sm.exists():
             # reretrieve submodule from tree
             try:
-                sm = repo.head.commit.tree[path]
+                sm = repo.head.commit[path]
                 sm._name = name
                 return sm
             except KeyError:
@@ -966,7 +966,7 @@ class Submodule(IndexObject, Iterable, Traversable):
         # If check is False, we might see a parent-commit that doesn't even contain the submodule anymore.
         # in that case, mark our sha as being NULL
         try:
-            self.binsha = pctree[self.path].binsha
+            self.binsha = pctree.join(self.path, parent_commit=pcommit).binsha
         except KeyError:
             self.binsha = self.NULL_BIN_SHA
         # end
@@ -1181,8 +1181,6 @@ class Submodule(IndexObject, Iterable, Traversable):
             return
         # END handle empty iterator
 
-        rt = pc.tree                                # root tree
-
         for sms in parser.sections():
             n = sm_name(sms)
             p = parser.get(sms, 'path')
@@ -1195,7 +1193,7 @@ class Submodule(IndexObject, Iterable, Traversable):
             # get the binsha
             index = repo.index
             try:
-                sm = rt[p]
+                sm = pc[p]
             except KeyError:
                 # try the index, maybe it was just added
                 try:
