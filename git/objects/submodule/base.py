@@ -2,6 +2,7 @@
 from io import BytesIO
 import logging
 import os
+import re
 import stat
 from unittest import SkipTest
 import uuid
@@ -24,6 +25,7 @@ from git.exc import (
     BadName
 )
 from git.objects.base import IndexObject, Object
+from git.objects.submodule.util import SM_SECTION_NAME_REGEX
 from git.objects.util import Traversable
 from git.util import (
     Iterable,
@@ -70,6 +72,9 @@ FETCH = UpdateProgress.FETCH
 UPDWKTREE = UpdateProgress.UPDWKTREE
 
 
+class ParentCommitUnknown(Exception):
+    pass
+
 # IndexObject comes via util module, its a 'hacky' fix thanks to pythons import
 # mechanism which cause plenty of trouble of the only reason for packages and
 # modules is refactoring - subpackages shouldn't depend on parent packages
@@ -107,32 +112,33 @@ class Submodule(IndexObject, Iterable, Traversable):
         super(Submodule, self).__init__(repo, binsha, mode, path)
         self.size = 0
         self._parent_commit = parent_commit
-        if url is not None:
-            self._url = url
+        self._url = url
+        self._name = name
         if branch_path is not None:
             assert isinstance(branch_path, str)
-            self._branch_path = branch_path
-        if name is not None:
-            self._name = name
+        self._branch_path = branch_path
 
     def _set_cache_(self, attr):
-        if attr in ('path', '_url', '_branch_path'):
-            reader = self.config_reader()
-            # default submodule values
-            try:
-                self.path = reader.get('path')
-            except cp.NoSectionError as e:
+        # super(Submodule, self)._set_cache_(attr)
+        # END handle attribute name
+        raise NotImplementedError
+
+    def _load_attrs(self):
+        reader = self.config_reader()
+        # default submodule values
+        try:
+            self.path = reader.get('path')
+        except cp.NoSectionError as e:
+            if self.repo.working_tree_dir:
                 raise ValueError("This submodule instance does not exist anymore in '%s' file"
                                  % osp.join(self.repo.working_tree_dir, '.gitmodules')) from e
-            # end
-            self._url = reader.get('url')
-            # git-python extension values - optional
-            self._branch_path = reader.get_value(self.k_head_option, git.Head.to_full_path(self.k_head_default))
-        elif attr == '_name':
-            raise AttributeError("Cannot retrieve the name of a submodule if it was not set initially")
-        else:
-            super(Submodule, self)._set_cache_(attr)
-        # END handle attribute name
+            else:
+                raise ValueError("This submodule instance does not exist anymore in bare repo at '%s'"
+                                 % self.repo.git_dir) from e
+        # end
+        self._url = reader.get('url')
+        # git-python extension values - optional
+        self._branch_path = reader.get_value(self.k_head_option, git.Head.to_full_path(self.k_head_default))
 
     def _get_intermediate_items(self, item):
         """:return: all the submodules of our module repository"""
@@ -162,11 +168,11 @@ class Submodule(IndexObject, Iterable, Traversable):
         return hash(self._name)
 
     def __str__(self):
-        return self._name
+        return self.name or ('<unknown submodule at %s: %s>' % (self.path, self.url))
 
     def __repr__(self):
-        return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)"\
-               % (type(self).__name__, self._name, self.path, self.url, self.branch_path)
+        return "git.%s(name=%s, path=%s, url=%s, branch_path=%s)" \
+               % (type(self).__name__, self.name, self.path, self.url, self.branch_path)
 
     @classmethod
     def _config_parser(cls, repo, parent_commit, read_only):
@@ -218,12 +224,59 @@ class Submodule(IndexObject, Iterable, Traversable):
         sio.name = cls.k_modules_file
         return sio
 
-    def _config_parser_constrained(self, read_only):
+    def _lookup_name_by_config_section_path(self):
+        pc = self.parent_commit
+        if pc is None:
+            raise ParentCommitUnknown
+
+        parser = self._config_parser(self.repo, pc, read_only=True)
+
+        name = None
+        config_file = parser._file_or_files
+        parser.read()
+        parser_sections = parser._sections
+        section_items = list(parser_sections.items())
+        for section_name, sections in section_items:
+            m = re.match(SM_SECTION_NAME_REGEX, section_name)
+            if not m:
+                raise RuntimeError('Unrecognized submodule section line: %s' % section_name)
+            cur_name = m['name']
+            if self.path == sections['path']:
+                # if [section['path'] == self.path for section in sections]:
+                if name is None:
+                    name = cur_name
+                else:
+                    raise AttributeError(
+                        'Submodule name not set, and multiple sections matching path (%s) found in config file %s (commit: %s): %s' % (
+                            self.path,
+                            config_file,
+                            pc or '???',
+                            ','.join([name, cur_name]),
+                        )
+                    )
+            else:
+                print('path %s not found in %d sections named %s' % (self.path, len(sections), section_name))
+        if name is None:
+            raise AttributeError(
+                'Submodule name not set, and no section matching path (%s) found in config file %s (commit: %s) with sections %s' % (
+                    self.path,
+                    config_file,
+                    pc.hexsha or '???',
+                    ','.join([k for k, _ in section_items])
+                )
+            )
+
+        self._name = name
+
+    def _config_parser_constrained(self, read_only, require_parent_commit=False):
         """:return: Config Parser constrained to our submodule in read or write mode"""
         try:
             pc = self.parent_commit
         except ValueError:
-            pc = None
+            if require_parent_commit:
+                raise ParentCommitUnknown("Refusing to instantiate config parser for Submodule with no parent_commit set: %s" % self)
+            else:
+                pc = None
         # end handle empty parent repository
         parser = self._config_parser(self.repo, pc, read_only)
         parser.set_submodule(self)
@@ -927,7 +980,7 @@ class Submodule(IndexObject, Iterable, Traversable):
 
         return self
 
-    def set_parent_commit(self, commit, check=True):
+    def set_parent_commit(self, commit, check=True, pcommit_name=None):
         """Set this instance to use the given commit whose tree is supposed to
         contain the .gitmodules blob.
 
@@ -953,14 +1006,11 @@ class Submodule(IndexObject, Iterable, Traversable):
 
         prev_pc = self._parent_commit
         self._parent_commit = pcommit
+        if pcommit_name:
+            self._name = pcommit_name
 
         if check:
-            parser = self._config_parser(self.repo, self._parent_commit, read_only=True)
-            if not parser.has_section(sm_section(self.name)):
-                self._parent_commit = prev_pc
-                raise ValueError("Submodule at path %r did not exist in parent commit %s" % (self.path, commit))
-            # END handle submodule did not exist
-        # END handle checking mode
+            self._set_cache_('path')
 
         # update our sha, it could have changed
         # If check is False, we might see a parent-commit that doesn't even contain the submodule anymore.
@@ -1118,6 +1168,11 @@ class Submodule(IndexObject, Iterable, Traversable):
         """
         :return: full (relative) path as string to the branch we would checkout
             from the remote and track"""
+        if self._branch_path is None:
+            try:
+                self._load_attrs()
+            except ParentCommitUnknown:
+                pass
         return self._branch_path
 
     @property
@@ -1130,15 +1185,26 @@ class Submodule(IndexObject, Iterable, Traversable):
     @property
     def url(self):
         """:return: The url to the repository which our module-repository refers to"""
+        if self._url is None:
+            try:
+                self._load_attrs()
+            except ParentCommitUnknown:
+                pass
         return self._url
 
     @property
     def parent_commit(self):
         """:return: Commit instance with the tree containing the .gitmodules file
         :note: will always point to the current head's commit if it was not set explicitly"""
-        if self._parent_commit is None:
-            return self.repo.commit()
         return self._parent_commit
+
+    @parent_commit.setter
+    def parent_commit(self, parent_commit):
+        assert parent_commit
+        if self._parent_commit != parent_commit:
+            self._clear_cache()
+        self._parent_commit = parent_commit
+
 
     @property
     def name(self):
@@ -1149,6 +1215,11 @@ class Submodule(IndexObject, Iterable, Traversable):
             used for remotes, which allows to change the path of the submodule
             easily
         """
+        if self._name is None:
+            try:
+                self._lookup_name_by_config_section_path()
+            except ParentCommitUnknown:
+                pass
         return self._name
 
     def config_reader(self):
@@ -1158,8 +1229,9 @@ class Submodule(IndexObject, Iterable, Traversable):
         :note: The config reader will actually read the data directly from the repository
             and thus does not need nor care about your working tree.
         :note: Should be cached by the caller and only kept as long as needed
-        :raise IOError: If the .gitmodules file/blob could not be read"""
-        return self._config_parser_constrained(read_only=True)
+        :raise IOError: If the .gitmodules file/blob could not be read
+        :raise RuntimeError: If parent_commit is not set on this Submodule"""
+        return self._config_parser_constrained(read_only=True, require_parent_commit=True)
 
     def children(self):
         """

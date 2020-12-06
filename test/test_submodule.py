@@ -2,6 +2,7 @@
 # This module is part of GitPython and is released under
 # the BSD License: http://www.opensource.org/licenses/bsd-license.php
 import os
+import re
 import shutil
 import sys
 from unittest import skipIf
@@ -85,7 +86,7 @@ class TestSubmodule(TestBase):
         assert smold != sm                  # the name changed
 
         # force it to reread its information
-        del(smold._url)
+        smold._load_attrs()
         smold.url == sm.url  # @NoEffect
 
         # test config_reader/writer methods
@@ -116,8 +117,13 @@ class TestSubmodule(TestBase):
 
         # make the old into a new - this doesn't work as the name changed
         self.assertRaises(ValueError, smold.set_parent_commit, self.k_subm_current)
+
+        # passing the module name explicitly works
+        smold.set_parent_commit(self.k_subm_current, pcommit_name='gitdb')
+        assert smold.hexsha == 'f2233fbf40f3f69309ce5cc714e99fcbdcd33ec3'
         # the sha is properly updated
-        smold.set_parent_commit(self.k_subm_changed + "~1")
+        smold.set_parent_commit(self.k_subm_changed + "~1", pcommit_name='lib/git/ext/gitdb')
+        assert smold.hexsha == '18152febd428e67b86bb4fb68ec1691d4de75a9c'
         assert smold.binsha != sm.binsha
 
         # raises if the sm didn't exist in new parent - it keeps its
@@ -146,7 +152,7 @@ class TestSubmodule(TestBase):
             ###########
             # preliminary tests
             # adding existing returns exactly the existing
-            sma = Submodule.add(rwrepo, sm.name, sm.path)
+            sma = Submodule.add(rwrepo, sm.name, sm.path, url=sm.path)
             assert sma.path == sm.path
 
             # no url and no module at path fails
@@ -711,7 +717,10 @@ class TestSubmodule(TestBase):
         sm2.move(sm2.path + '_moved')
 
         parent.index.commit("moved submodules")
-
+        # Below we'll test writing to the submodule's config, but first we update its `parent_commit` attr, otherwise it
+        # will still point to the previous commit, which is now in the parent's history (i.e. no longer HEAD), so
+        # attempting to write to it will fail
+        sm.parent_commit = parent.commit()
         with sm.config_writer() as writer:
             writer.set_value('user.email', 'example@example.com')
             writer.set_value('user.name', 'me')
@@ -943,3 +952,31 @@ class TestSubmodule(TestBase):
         sm_depth = 1
         sm = parent.create_submodule(sm_name, sm_name, url=self._small_repo_url(), depth=sm_depth)
         self.assertEqual(len(list(sm.module().iter_commits())), sm_depth)
+
+    @with_rw_directory
+    def test_submodule_name(self, rwdir):
+        parent_dir = osp.join(rwdir, 'test_tree')
+        parent = git.Repo.init(parent_dir)
+        sm_name = 'test_module'
+        sm_path = 'mymodules/myname'
+        sm_dir = osp.join(parent_dir, sm_path)
+        parent.create_submodule(sm_name, sm_path, url=self._small_repo_url())
+        sm_repo = git.Repo(sm_dir)
+
+        sm_repo.git.checkout('v3.0.2')
+        parent.git.commit('-a','-m','add test submodule: smmap v3.0.2')
+        tree = parent.tree()
+        sm_tree = tree['mymodules/myname']
+        assert sm_tree.hexsha == 'f4d7a58b4d96200cd057a38a0758d3c84901f57e'
+        assert str(sm_tree) == 'test_module'
+        rpr = repr(sm_tree)
+        assert re.match('git.Submodule\(name=test_module, path=mymodules/myname, url=.*/git/ext/gitdb/gitdb/ext/smmap, branch_path=refs/heads/master\)', rpr)
+
+        sm_repo.git.checkout('v3.0.4')
+        parent.git.commit('-a','-m','update test submodule to v3.0.4')
+        tree = parent.tree()
+        sm_tree = tree['mymodules/myname']
+        assert sm_tree.hexsha == '5e5f940dff80beaa3eedf9342ef502f5e630d5ed'
+        assert str(sm_tree) == 'test_module'
+        rpr = repr(sm_tree)
+        assert re.match('git.Submodule\(name=test_module, path=mymodules/myname, url=.*/git/ext/gitdb/gitdb/ext/smmap, branch_path=refs/heads/master\)', rpr)
