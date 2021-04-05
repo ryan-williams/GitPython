@@ -93,7 +93,7 @@ class Submodule(IndexObject, Iterable, Traversable):
     type = 'submodule'
 
     __slots__ = ('_parent_commit', '_url', '_branch_path', '_name', '__weakref__')
-    _cache_attrs = ('path', '_url', '_branch_path')
+    _cache_attrs = ('path', '_url', '_branch_path', '_name')
 
     def __init__(self, repo, binsha, mode=None, path=None, name=None, parent_commit=None, url=None, branch_path=None):
         """Initialize this instance with its attributes. We only document the ones
@@ -106,6 +106,10 @@ class Submodule(IndexObject, Iterable, Traversable):
         :param branch_path: full (relative) path to ref to checkout when cloning the remote repository"""
         super(Submodule, self).__init__(repo, binsha, mode, path)
         self.size = 0
+        if not path:
+            raise RuntimeError('Submodule.path is required for construction')
+        if not parent_commit and not (name and path and url):
+            raise RuntimeError("If parent_commit isn't provided, {name,path,url} must be")
         self._parent_commit = parent_commit
         if url is not None:
             self._url = url
@@ -116,7 +120,7 @@ class Submodule(IndexObject, Iterable, Traversable):
             self._name = name
 
     def _set_cache_(self, attr):
-        if attr in ('path', '_url', '_branch_path'):
+        if attr in ('path', '_url', '_branch_path', '_name'):
             reader = self.config_reader()
             # default submodule values
             try:
@@ -220,10 +224,7 @@ class Submodule(IndexObject, Iterable, Traversable):
 
     def _config_parser_constrained(self, read_only):
         """:return: Config Parser constrained to our submodule in read or write mode"""
-        try:
-            pc = self.parent_commit
-        except ValueError:
-            pc = None
+        pc = self.parent_commit
         # end handle empty parent repository
         parser = self._config_parser(self.repo, pc, read_only)
         parser.set_submodule(self)
@@ -1136,9 +1137,14 @@ class Submodule(IndexObject, Iterable, Traversable):
     def parent_commit(self):
         """:return: Commit instance with the tree containing the .gitmodules file
         :note: will always point to the current head's commit if it was not set explicitly"""
-        if self._parent_commit is None:
-            return self.repo.commit()
         return self._parent_commit
+
+    @parent_commit.setter
+    def parent_commit(self, parent_commit):
+        assert parent_commit
+        if self._parent_commit != parent_commit:
+            self._clear_cache()
+        self._parent_commit = parent_commit
 
     @property
     def name(self):
